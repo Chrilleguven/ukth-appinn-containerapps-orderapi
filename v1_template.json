@@ -1,0 +1,315 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.11.1.770",
+      "templateHash": "168026399697494683"
+    }
+  },
+  "parameters": {
+    "Location": {
+      "type": "string"
+    },
+    "StorageAccount_prefix": {
+      "type": "string"
+    },
+    "LogAnalytics_Workspace_Name": {
+      "type": "string"
+    },
+    "AppInsights_Name": {
+      "type": "string"
+    },
+    "ContainerApps_Environment_Name": {
+      "type": "string"
+    },
+    "ContainerApps_HttpApi_CurrentRevisionName": {
+      "type": "string"
+    },
+    "ContainerApps_HttpApi_NewRevisionName": {
+      "type": "string"
+    },
+    "Container_Registry_Name": {
+      "type": "string"
+    }
+  },
+  "variables": {
+    "StorageAccount_ApiVersion": "2018-07-01",
+    "StorageAccount_Queue_Name": "demoqueue",
+    "Workspace_Resource_Id": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('LogAnalytics_Workspace_Name'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2021-12-01-preview",
+      "name": "[parameters('Container_Registry_Name')]",
+      "location": "[parameters('Location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "adminUserEnabled": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2021-01-01",
+      "name": "[format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id))]",
+      "location": "[parameters('Location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2021-01-01",
+      "name": "[format('{0}/default/{1}', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)), variables('StorageAccount_Queue_Name'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2020-08-01",
+      "name": "[parameters('LogAnalytics_Workspace_Name')]",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30,
+        "features": {
+          "searchVersion": 1,
+          "legacy": 0,
+          "enableLogAccessUsingOnlyResourcePermissions": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[parameters('AppInsights_Name')]",
+      "kind": "web",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "Application_Type": "web",
+        "Flow_Type": "Redfield",
+        "Request_Source": "CustomDeployment",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('LogAnalytics_Workspace_Name'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('LogAnalytics_Workspace_Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('ContainerApps_Environment_Name')]",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', parameters('LogAnalytics_Workspace_Name'))).customerId]",
+            "sharedKey": "[listKeys(variables('Workspace_Resource_Id'), '2015-03-20').primarySharedKey]"
+          }
+        },
+        "daprAIInstrumentationKey": "[reference(resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))).InstrumentationKey]",
+        "daprAIConnectionString": "[reference(resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))).ConnectionString]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('LogAnalytics_Workspace_Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2022-03-01",
+      "name": "queuereader",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]",
+        "configuration": {
+          "activeRevisionsMode": "single",
+          "secrets": [
+            {
+              "name": "queueconnection",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)), listKeys(resourceId('Microsoft.Storage/storageAccounts', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id))), variables('StorageAccount_ApiVersion')).keys[0].value)]"
+            }
+          ],
+          "dapr": {
+            "enabled": true,
+            "appId": "queuereader"
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "image": "krnissbrandt/aca-ws-queuereader:v1",
+              "name": "queuereader",
+              "env": [
+                {
+                  "name": "QueueName",
+                  "value": "foo"
+                },
+                {
+                  "name": "QueueConnectionString",
+                  "secretRef": "queueconnection"
+                },
+                {
+                  "name": "TargetApp",
+                  "value": "storeapp"
+                },
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))).ConnectionString]"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "myqueuerule",
+                "azureQueue": {
+                  "queueName": "demoqueue",
+                  "queueLength": 10,
+                  "auth": [
+                    {
+                      "secretRef": "queueconnection",
+                      "triggerParameter": "connection"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2022-03-01",
+      "name": "storeapp",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]",
+        "configuration": {
+          "activeRevisionsMode": "multiple",
+          "ingress": {
+            "external": true,
+            "targetPort": 3000
+          },
+          "dapr": {
+            "enabled": true,
+            "appPort": 3000
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "image": "krnissbrandt/aca-ws-storeapp:v1",
+              "name": "storeapp",
+              "env": [
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))).ConnectionString]"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1,
+            "rules": []
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2022-03-01",
+      "name": "httpapi",
+      "location": "[parameters('Location')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]",
+        "configuration": {
+          "activeRevisionsMode": "multiple",
+          "ingress": {
+            "external": true,
+            "targetPort": 80
+          },
+          "secrets": [
+            {
+              "name": "queueconnection",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)), listKeys(resourceId('Microsoft.Storage/storageAccounts', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id))), variables('StorageAccount_ApiVersion')).keys[0].value)]"
+            }
+          ],
+          "dapr": {
+            "enabled": false
+          }
+        },
+        "template": {
+          "revisionSuffix": "[parameters('ContainerApps_HttpApi_CurrentRevisionName')]",
+          "containers": [
+            {
+              "image": "krnissbrandt/aca-ws-httpapi:v1",
+              "name": "httpapi",
+              "env": [
+                {
+                  "name": "QueueName",
+                  "value": "demoqueue"
+                },
+                {
+                  "name": "QueueConnectionString",
+                  "secretRef": "queueconnection"
+                },
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))).ConnectionString]"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "httpscalingrule",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "10"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', parameters('AppInsights_Name'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('ContainerApps_Environment_Name'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}{1}', parameters('StorageAccount_prefix'), uniqueString(resourceGroup().id)))]"
+      ]
+    }
+  ]
+}
